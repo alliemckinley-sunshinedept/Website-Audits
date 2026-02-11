@@ -1,0 +1,174 @@
+name: UX Site Audit
+
+# This allows you to run the audit manually with a button click
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: 'Website URL to audit (optional - leave blank to use config file)'
+        required: false
+        default: ''
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install audit tools
+        run: |
+          npm install -g lighthouse pa11y-ci @lhci/cli
+          npm install -g puppeteer
+      
+      - name: Read configuration
+        id: config
+        run: |
+          if [ -n "${{ github.event.inputs.site_url }}" ]; then
+            echo "AUDIT_URL=${{ github.event.inputs.site_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "AUDIT_URL=$(cat audit-config.json | jq -r '.urls[0]')" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create reports directory
+        run: mkdir -p reports
+      
+      - name: Run Lighthouse Audit
+        run: |
+          lighthouse ${{ steps.config.outputs.AUDIT_URL }} \
+            --output html \
+            --output json \
+            --output-path ./reports/lighthouse-report \
+            --preset=desktop \
+            --chrome-flags="--headless --no-sandbox"
+          
+          # Also run mobile audit
+          lighthouse ${{ steps.config.outputs.AUDIT_URL }} \
+            --output html \
+            --output json \
+            --output-path ./reports/lighthouse-mobile-report \
+            --preset=mobile \
+            --chrome-flags="--headless --no-sandbox"
+      
+      - name: Run Pa11y Accessibility Audit
+        continue-on-error: true
+        run: |
+          pa11y ${{ steps.config.outputs.AUDIT_URL }} \
+            --reporter html > ./reports/pa11y-report.html || true
+      
+      - name: Generate Summary Report
+        run: |
+          cat > ./reports/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>UX Audit Reports</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 40px 20px;
+                background: #f5f5f5;
+              }
+              h1 {
+                color: #333;
+                border-bottom: 3px solid #4CAF50;
+                padding-bottom: 10px;
+              }
+              .report-card {
+                background: white;
+                padding: 20px;
+                margin: 20px 0;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+              }
+              .report-card h2 {
+                margin-top: 0;
+                color: #4CAF50;
+              }
+              a {
+                display: inline-block;
+                background: #4CAF50;
+                color: white;
+                padding: 10px 20px;
+                text-decoration: none;
+                border-radius: 4px;
+                margin: 5px 5px 5px 0;
+              }
+              a:hover {
+                background: #45a049;
+              }
+              .date {
+                color: #666;
+                font-size: 14px;
+              }
+              .description {
+                color: #555;
+                margin: 10px 0;
+              }
+            </style>
+          </head>
+          <body>
+            <h1>🔍 UX Audit Reports</h1>
+            <p class="date">Generated: $(date)</p>
+            <p class="description">Automated audits for: ${{ steps.config.outputs.AUDIT_URL }}</p>
+            
+            <div class="report-card">
+              <h2>📊 Lighthouse - Desktop Performance</h2>
+              <p class="description">Full performance, accessibility, SEO, and best practices audit for desktop.</p>
+              <a href="lighthouse-report.html">View Desktop Report</a>
+              <a href="lighthouse-report.json">Download JSON</a>
+            </div>
+            
+            <div class="report-card">
+              <h2>📱 Lighthouse - Mobile Performance</h2>
+              <p class="description">Mobile-specific performance and usability audit.</p>
+              <a href="lighthouse-mobile-report.html">View Mobile Report</a>
+              <a href="lighthouse-mobile-report.json">Download JSON</a>
+            </div>
+            
+            <div class="report-card">
+              <h2>♿ Pa11y - Accessibility Check</h2>
+              <p class="description">Detailed accessibility compliance audit (WCAG 2.1 AA standards).</p>
+              <a href="pa11y-report.html">View Accessibility Report</a>
+            </div>
+            
+            <div class="report-card">
+              <h2>📋 Quick Reference</h2>
+              <ul>
+                <li><strong>Performance Score:</strong> Check Lighthouse reports for Core Web Vitals</li>
+                <li><strong>Accessibility:</strong> Review both Lighthouse and Pa11y for complete coverage</li>
+                <li><strong>Mobile:</strong> Compare mobile vs desktop Lighthouse scores</li>
+              </ul>
+            </div>
+          </body>
+          </html>
+          EOF
+      
+      - name: Upload reports as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-audit-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
+      
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./reports
+          destination_dir: audit-${{ github.run_number }}
+      
+      - name: Comment with results
+        run: |
+          echo "✅ Audit complete! View your reports at:"
+          echo "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/audit-${{ github.run_number }}/"
